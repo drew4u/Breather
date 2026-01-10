@@ -19,6 +19,11 @@ struct ContentView: View {
     @State private var meditationStartTime: Date?
     @State private var showDurationPicker = false
     
+    // Completion stats
+    @State private var showCompletionStats = false
+    @State private var lastSessionDuration: TimeInterval = 0
+    @State private var totalMeditationTime: TimeInterval = 0
+    
     private var totalTime: TimeInterval {
         TimeInterval(selectedMinutes * 60)
     }
@@ -48,6 +53,19 @@ struct ContentView: View {
                         onFinish: finishMeditation,
                         onTapDuration: { showDurationPicker = true }
                     )
+                    
+                    // Completion stats (shown after finishing)
+                    if showCompletionStats && !isRunning {
+                        CompletionStatsView(
+                            sessionDuration: lastSessionDuration,
+                            totalTime: totalMeditationTime
+                        )
+                        .transition(.asymmetric(
+                            insertion: .move(edge: .bottom).combined(with: .opacity),
+                            removal: .opacity
+                        ))
+                        .padding(.top, 40)
+                    }
                     
                     Spacer()
                 }
@@ -130,19 +148,41 @@ struct ContentView: View {
         timer?.invalidate()
         timer = nil
         
+        // Calculate session duration
+        let meditatedDuration = totalTime - timeRemaining
+        
         // Save meditation to HealthKit
         if let startTime = meditationStartTime {
-            let meditatedDuration = totalTime - timeRemaining
             if meditatedDuration > 0 {
                 saveMeditationToHealth(startDate: startTime, duration: meditatedDuration)
             }
         }
         meditationStartTime = nil
         
+        // Update completion stats
+        if meditatedDuration > 0 {
+            lastSessionDuration = meditatedDuration
+            totalMeditationTime += meditatedDuration
+        }
+        
         withAnimation(.spring(response: 0.8, dampingFraction: 0.75)) {
             isRunning = false
             isPaused = false
             timeRemaining = totalTime
+        }
+        
+        // Show completion stats with animation
+        if meditatedDuration > 0 {
+            withAnimation(.easeOut(duration: 0.8).delay(0.3)) {
+                showCompletionStats = true
+            }
+            
+            // Hide after 15 seconds
+            DispatchQueue.main.asyncAfter(deadline: .now() + 15) {
+                withAnimation(.easeIn(duration: 0.6)) {
+                    showCompletionStats = false
+                }
+            }
         }
     }
     
@@ -642,6 +682,85 @@ struct DurationPickerSheet: View {
             return "\(hours) hr \(mins) min"
         }
         return "\(minutes) minutes"
+    }
+}
+
+// MARK: - Completion Stats View
+
+struct CompletionStatsView: View {
+    let sessionDuration: TimeInterval
+    let totalTime: TimeInterval
+    
+    @State private var opacity: Double = 0
+    @State private var offset: CGFloat = 20
+    
+    var body: some View {
+        VStack(spacing: 16) {
+            // Session completed label
+            Text("SESSION COMPLETE")
+                .font(.system(size: 11, weight: .bold, design: .rounded))
+                .tracking(2)
+                .foregroundColor(.black.opacity(0.4))
+            
+            // Stats row
+            HStack(spacing: 40) {
+                // This session
+                VStack(spacing: 4) {
+                    Text(formatDuration(sessionDuration))
+                        .font(.system(size: 28, weight: .bold, design: .rounded))
+                        .foregroundColor(.black.opacity(0.8))
+                    Text("This Session")
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundColor(.black.opacity(0.4))
+                }
+                
+                // Divider
+                Rectangle()
+                    .fill(Color.black.opacity(0.1))
+                    .frame(width: 1, height: 40)
+                
+                // Total today
+                VStack(spacing: 4) {
+                    Text(formatDuration(totalTime))
+                        .font(.system(size: 28, weight: .bold, design: .rounded))
+                        .foregroundColor(.black.opacity(0.8))
+                    Text("Total Today")
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundColor(.black.opacity(0.4))
+                }
+            }
+        }
+        .padding(.horizontal, 30)
+        .padding(.vertical, 24)
+        .background(
+            RoundedRectangle(cornerRadius: 24)
+                .fill(Color.white.opacity(0.7))
+                .shadow(color: .black.opacity(0.06), radius: 20, x: 0, y: 8)
+        )
+        .opacity(opacity)
+        .offset(y: offset)
+        .onAppear {
+            withAnimation(.easeOut(duration: 0.8)) {
+                opacity = 1
+                offset = 0
+            }
+        }
+    }
+    
+    private func formatDuration(_ duration: TimeInterval) -> String {
+        let totalSeconds = Int(duration)
+        let minutes = totalSeconds / 60
+        let seconds = totalSeconds % 60
+        
+        if minutes >= 60 {
+            let hours = minutes / 60
+            let mins = minutes % 60
+            return "\(hours)h \(mins)m"
+        } else if minutes > 0 {
+            return "\(minutes)m \(seconds)s"
+        } else {
+            return "\(seconds)s"
+        }
     }
 }
 
