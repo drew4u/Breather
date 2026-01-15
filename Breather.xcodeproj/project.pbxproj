@@ -257,6 +257,8 @@
 				DEVELOPMENT_TEAM = QB654HUV4R;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Breather - Meditation Timer";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.healthcare-fitness";
 				INFOPLIST_KEY_NSHealthClinicalHealthRecordsShareUsageDescription = "Used to read meditation minutes";
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "Used to read meditation minutes";
 				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Used to log meditation minutes";
@@ -293,6 +295,8 @@
 				DEVELOPMENT_TEAM = QB654HUV4R;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Breather - Meditation Timer";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.healthcare-fitness";
 				INFOPLIST_KEY_NSHealthClinicalHealthRecordsShareUsageDescription = "Used to read meditation minutes";
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "Used to read meditation minutes";
 				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Used to log meditation minutes";

@@ -8,8 +8,13 @@
 import SwiftUI
 import AVFoundation
 import HealthKit
+import UIKit
 
 struct ContentView: View {
+    @AppStorage("bellStartEndEnabled") private var bellStartEndEnabled = true
+    @AppStorage("bellHalfwayEnabled") private var bellHalfwayEnabled = false
+    @AppStorage("bellEveryMinuteEnabled") private var bellEveryMinuteEnabled = false
+    
     @State private var isRunning = false
     @State private var isPaused = false
     @State private var selectedMinutes: Int = 10
@@ -17,7 +22,11 @@ struct ContentView: View {
     @State private var timer: Timer?
     @State private var audioPlayer: AVAudioPlayer?
     @State private var meditationStartTime: Date?
+    @State private var pauseStartTime: Date?
     @State private var showDurationPicker = false
+    @State private var showSettings = false
+    @State private var hasPlayedHalfway = false
+    @State private var lastMinuteBellSecond: Int?
     
     // Completion stats
     @State private var showCompletionStats = false
@@ -31,60 +40,104 @@ struct ContentView: View {
     private let healthStore = HKHealthStore()
 
     var body: some View {
-        GeometryReader { geometry in
-            ZStack {
-                // Breathing gradient background
-                BreathingBackground(isRunning: isRunning, isPaused: isPaused)
-                    .ignoresSafeArea()
-                
-                VStack(spacing: 0) {
+        NavigationStack {
+            GeometryReader { geometry in
+                ZStack {
+                    // Breathing gradient background
+                    BreathingBackground(isRunning: isRunning, isPaused: isPaused)
+                        .ignoresSafeArea()
                     
-                    Spacer()
-                    
-                    // Main circle - unified view for both states
-                    MainCircleView(
-                        isRunning: isRunning,
-                        isPaused: isPaused,
-                        timeRemaining: timeRemaining,
-                        totalTime: totalTime,
-                        selectedMinutes: selectedMinutes,
-                        onStart: startMeditation,
-                        onPause: togglePause,
-                        onFinish: finishMeditation,
-                        onTapDuration: { showDurationPicker = true }
-                    )
-                    
-                    // Completion stats (shown after finishing)
-                    if showCompletionStats && !isRunning {
-                        CompletionStatsView(
-                            sessionDuration: lastSessionDuration,
-                            totalTime: totalMeditationTime
+                    VStack(spacing: 0) {
+                        
+                        Spacer()
+                        
+                        // Main circle - unified view for both states
+                        MainCircleView(
+                            isRunning: isRunning,
+                            isPaused: isPaused,
+                            timeRemaining: timeRemaining,
+                            totalTime: totalTime,
+                            selectedMinutes: selectedMinutes,
+                            onStart: startMeditation,
+                            onPause: togglePause,
+                            onFinish: finishMeditation,
+                            onTapDuration: { showDurationPicker = true }
                         )
-                        .transition(.asymmetric(
-                            insertion: .move(edge: .bottom).combined(with: .opacity),
-                            removal: .opacity
-                        ))
-                        .padding(.top, 40)
+                        
+                        // Completion stats (shown after finishing)
+                        if showCompletionStats && !isRunning {
+                            CompletionStatsView(
+                                sessionDuration: lastSessionDuration,
+                                totalTime: totalMeditationTime
+                            )
+                            .transition(.asymmetric(
+                                insertion: .move(edge: .bottom).combined(with: .opacity),
+                                removal: .opacity
+                            ))
+                            .padding(.top, 40)
+                        }
+                        
+                        Spacer()
                     }
-                    
-                    Spacer()
+                }
+            }
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showSettings = true
+                    } label: {
+                        Image(systemName: "gearshape")
+                    }
+                    .accessibilityLabel("Settings")
                 }
             }
         }
         .onAppear {
             requestHealthKitAuthorization()
         }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            // Recalculate time when app becomes active (in case it was backgrounded)
+            if isRunning, let startTime = meditationStartTime {
+                if isPaused {
+                    // If paused, just ensure the timer state is consistent
+                    // The pauseStartTime was set when the user paused
+                } else {
+                    let elapsed = Date().timeIntervalSince(startTime)
+                    let remaining = max(0, totalTime - elapsed)
+                    timeRemaining = remaining
+                    
+                    if remaining <= 0 {
+                        if bellStartEndEnabled {
+                            playBellSound()
+                        }
+                        finishMeditation()
+                    }
+                }
+            }
+        }
         .sheet(isPresented: $showDurationPicker) {
             DurationPickerSheet(selectedMinutes: $selectedMinutes)
                 .presentationDetents([.medium])
                 .presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: $showSettings) {
+            SettingsView()
         }
         .preferredColorScheme(.light)
     }
     
     private func startMeditation() {
         meditationStartTime = Date()
-        playBellSound()
+        hasPlayedHalfway = false
+        lastMinuteBellSecond = nil
+        
+        if bellStartEndEnabled {
+            playBellSound()
+        }
+        
+        // Prevent screen from sleeping during meditation
+        UIApplication.shared.isIdleTimerDisabled = true
+        
         withAnimation(.spring(response: 0.8, dampingFraction: 0.75)) {
             timeRemaining = totalTime
             isRunning = true
@@ -95,18 +148,39 @@ struct ContentView: View {
     
     private func startTimer() {
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
-            if !isPaused {
-                if timeRemaining > 0 {
+        timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { _ in
+            if !isPaused, let startTime = meditationStartTime {
+                let elapsed = Date().timeIntervalSince(startTime)
+                let remaining = max(0, totalTime - elapsed)
+                let elapsedSeconds = Int(elapsed)
+                
+                // Only animate if the value actually changed (avoid unnecessary updates)
+                if abs(remaining - timeRemaining) >= 0.5 {
                     withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
-                        timeRemaining -= 1
+                        timeRemaining = remaining
                     }
-                    
-                    // Session complete
-                    if timeRemaining == 0 {
+                }
+                
+                if bellHalfwayEnabled && !hasPlayedHalfway && elapsed >= totalTime / 2 && remaining > 0 {
+                    playBellSound()
+                    hasPlayedHalfway = true
+                }
+                
+                if bellEveryMinuteEnabled {
+                    if elapsedSeconds > 0,
+                       elapsedSeconds % 60 == 0,
+                       elapsedSeconds != lastMinuteBellSecond {
                         playBellSound()
-                        finishMeditation()
+                        lastMinuteBellSecond = elapsedSeconds
                     }
+                }
+                
+                // Session complete
+                if remaining <= 0 {
+                    if bellStartEndEnabled {
+                        playBellSound()
+                    }
+                    finishMeditation()
                 }
             }
         }
@@ -139,6 +213,20 @@ struct ContentView: View {
     }
     
     private func togglePause() {
+        if isPaused {
+            // Resuming: adjust meditationStartTime to account for paused duration
+            if let pauseStart = pauseStartTime, let medStart = meditationStartTime {
+                let pausedDuration = Date().timeIntervalSince(pauseStart)
+                meditationStartTime = medStart.addingTimeInterval(pausedDuration)
+            }
+            pauseStartTime = nil
+        } else {
+            // Pausing: record when we paused
+            pauseStartTime = Date()
+        }
+        
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        
         withAnimation(.spring(response: 0.4, dampingFraction: 0.8)) {
             isPaused.toggle()
         }
@@ -147,6 +235,9 @@ struct ContentView: View {
     private func finishMeditation() {
         timer?.invalidate()
         timer = nil
+        
+        // Re-enable screen sleep
+        UIApplication.shared.isIdleTimerDisabled = false
         
         // Calculate session duration
         let meditatedDuration = totalTime - timeRemaining
@@ -158,12 +249,17 @@ struct ContentView: View {
             }
         }
         meditationStartTime = nil
+        pauseStartTime = nil
+        hasPlayedHalfway = false
+        lastMinuteBellSecond = nil
         
         // Update completion stats
         if meditatedDuration > 0 {
             lastSessionDuration = meditatedDuration
             totalMeditationTime += meditatedDuration
         }
+        
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
         
         withAnimation(.spring(response: 0.8, dampingFraction: 0.75)) {
             isRunning = false
@@ -360,45 +456,35 @@ struct MainCircleView: View {
             
             // Control buttons (only when running)
             if isRunning {
-                HStack(spacing: 50) {
-                    // Pause/Resume button
+                HStack(spacing: 24) {
                     Button(action: onPause) {
-                        VStack(spacing: 10) {
-                            ZStack {
-                                Circle()
-                                    .fill(Color.white.opacity(0.8))
-                                    .frame(width: 56, height: 56)
-                                    .shadow(color: .black.opacity(0.08), radius: 10, x: 0, y: 4)
-                                
-                                Image(systemName: isPaused ? "play.fill" : "pause.fill")
-                                    .font(.system(size: 20, weight: .medium))
-                                    .foregroundColor(.black.opacity(0.7))
-                                    .contentTransition(.symbolEffect(.replace))
-                            }
-                            Text(isPaused ? "Resume" : "Pause")
-                                .font(.system(size: 12, weight: .semibold, design: .rounded))
-                                .foregroundColor(.black.opacity(0.5))
-                        }
+                        Label(isPaused ? "Resume" : "Pause", systemImage: isPaused ? "play.fill" : "pause.fill")
+                            .contentTransition(.symbolEffect(.replace))
                     }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 10)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .overlay(
+                        Capsule()
+                            .stroke(Color.white.opacity(0.25), lineWidth: 1)
+                    )
+                    .shadow(color: .black.opacity(0.08), radius: 12, x: 0, y: 6)
+                    .foregroundStyle(.black.opacity(0.7))
                     
-                    // Finish button
                     Button(action: onFinish) {
-                        VStack(spacing: 10) {
-                            ZStack {
-                                Circle()
-                                    .fill(Color.white.opacity(0.8))
-                                    .frame(width: 56, height: 56)
-                                    .shadow(color: .black.opacity(0.08), radius: 10, x: 0, y: 4)
-                                
-                                Image(systemName: "stop.fill")
-                                    .font(.system(size: 18, weight: .medium))
-                                    .foregroundColor(.black.opacity(0.7))
-                            }
-                            Text("Finish")
-                                .font(.system(size: 12, weight: .semibold, design: .rounded))
-                                .foregroundColor(.black.opacity(0.5))
-                        }
+                        Label("Finish", systemImage: "stop.fill")
                     }
+                    .buttonStyle(.plain)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 10)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .overlay(
+                        Capsule()
+                            .stroke(Color.white.opacity(0.25), lineWidth: 1)
+                    )
+                    .shadow(color: .black.opacity(0.08), radius: 12, x: 0, y: 6)
+                    .foregroundStyle(.black.opacity(0.7))
                 }
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
@@ -760,6 +846,36 @@ struct CompletionStatsView: View {
             return "\(minutes)m \(seconds)s"
         } else {
             return "\(seconds)s"
+        }
+    }
+}
+
+// MARK: - Settings
+
+struct SettingsView: View {
+    @AppStorage("bellStartEndEnabled") private var bellStartEndEnabled = true
+    @AppStorage("bellHalfwayEnabled") private var bellHalfwayEnabled = false
+    @AppStorage("bellEveryMinuteEnabled") private var bellEveryMinuteEnabled = false
+    @Environment(\.dismiss) private var dismiss
+    
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Toggle("Start & end bell", isOn: $bellStartEndEnabled)
+                    Toggle("Halfway bell", isOn: $bellHalfwayEnabled)
+                    Toggle("Bell every minute", isOn: $bellEveryMinuteEnabled)
+                }
+            }
+            .navigationTitle("Settings")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                }
+            }
         }
     }
 }
